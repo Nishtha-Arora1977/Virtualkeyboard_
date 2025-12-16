@@ -6,3 +6,4 @@ Gesture Recognition: Implement algorithms to recognize and interpret hand gestur
 Keyboard Simulation: Develop functionality to simulate keyboard inputs corresponding to recognized gestures, effectively creating a virtual keyboard interface.
 User Interface Design: Design an intuitive and visually appealing user interface to display the virtual keyboard and provide feedback to users during interaction.
 Accuracy and Efficiency: Ensure the system's accuracy and efficiency in recognizing gestures and translating them into appropriate keyboard inputs, minimizing latency and errors.
+"test" 

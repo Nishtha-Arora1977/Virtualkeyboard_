@@ -15,7 +15,7 @@
 | 🌐 **Web demo** (Vercel-ready) | Browser, phone, Vercel static hosting | `index.html` → `app.js` |
 | 🖥️ **Desktop** (OpenCV) | Local PC with webcam + Python | `virtualkeyboard.py` |
 
-![Demo](rs%202.png)
+![Demo](demo.png)
 
 ---
 
@@ -49,7 +49,7 @@ Virtualkeyboard_/
 ├── HandTrackingModule.py   # HandDetector wrapper (MediaPipe)
 ├── keys.py                 # Key box class (draw + hit-test)
 ├── requirements.txt        # Python deps
-├── rs 2.png                # Demo screenshot
+├── demo.png                 # Demo screenshot
 ├── favicon.svg             # Site icon (avoids 404)
 ├── LICENSE                 # MIT
 ├── CONTRIBUTING.md         # How to contribute

@@ -14,16 +14,8 @@ def getMousePos(event, x, y, flags, param):
         mouseX, mouseY = x, y
 
 
-# Backward-compat alias (old typo name)
-getMousPos = getMousePos
-
-
 def calculateIntDistance(pt1, pt2):
     return int(((pt1[0] - pt2[0]) ** 2 + (pt1[1] - pt2[1]) ** 2) ** 0.5)
-
-
-# Backward-compat alias (old typo name)
-calculateIntDidtance = calculateIntDistance
 
 
 def press_key(keyboard, text):
@@ -39,6 +31,18 @@ def press_key(keyboard, text):
     elif len(text) == 1:
         keyboard.press(text.lower())
         keyboard.release(text.lower())
+
+
+def apply_key(text):
+    """Single place that updates the on-screen buffer + real OS keypress."""
+    if text == '<--':
+        textBox.text = textBox.text[:-1]
+        press_key(keyboard, '<--')
+    elif text == 'clr':
+        textBox.text = ''
+    elif len(textBox.text) < 30:
+        textBox.text += " " if text == 'Space' else text
+        press_key(keyboard, text)
 
 
 # Creating keys
@@ -75,22 +79,19 @@ ret, init_frame = cap.read()
 if not ret:
     raise RuntimeError("Could not read from webcam (index 0).")
 frameHeight, frameWidth, _ = init_frame.shape
-showKey.x = int(frameWidth * 1.5) - 85
-exitKey.x = int(frameWidth * 1.5) - 85
+for _key in (showKey, exitKey):
+    _key.x = int(frameWidth * 1.5) - 85
 
 clickedX, clickedY = 0, 0
 mouseX, mouseY = 0, 0
 
 show = False
 cv2.namedWindow('video')
-counter = 0
+cv2.setMouseCallback('video', getMousePos)
 previousClick = 0
 
 keyboard = Controller()
 while True:
-    if counter > 0:
-        counter -= 1
-
     signTipX = 0
     signTipY = 0
 
@@ -121,7 +122,6 @@ while True:
     cv2.putText(frame, str(fps) + " FPS", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
     showKey.drawKey(frame, (255, 255, 255), (0, 0, 0), 0.1, fontScale=0.5)
     exitKey.drawKey(frame, (255, 255, 255), (0, 0, 0), 0.1, fontScale=0.5)
-    cv2.setMouseCallback('video', getMousePos)
 
     if showKey.isOver(clickedX, clickedY):
         show = not show
@@ -140,33 +140,13 @@ while True:
                 alpha = 0.1
                 # writing using mouse left click
                 if k.isOver(clickedX, clickedY):
-                    if k.text == '<--':
-                        textBox.text = textBox.text[:-1]
-                        press_key(keyboard, '<--')
-                    elif k.text == 'clr':
-                        textBox.text = ''
-                    elif len(textBox.text) < 30:
-                        if k.text == 'Space':
-                            textBox.text += " "
-                        else:
-                            textBox.text += k.text
-                        press_key(keyboard, k.text)
+                    apply_key(k.text)
 
                 # writing using fingers: pinch with both fingertips over same key
                 if k.isOver(signTipX, signTipY) and k.isOver(thumbTipX, thumbTipY):
                     clickTime = time.time()
                     if clickTime - previousClick > 0.4:
-                        if k.text == '<--':
-                            textBox.text = textBox.text[:-1]
-                        elif k.text == 'clr':
-                            textBox.text = ''
-                        elif len(textBox.text) < 30:
-                            if k.text == 'Space':
-                                textBox.text += " "
-                            else:
-                                textBox.text += k.text
-                            # simulating the press of actual keyboard
-                            press_key(keyboard, k.text)
+                        apply_key(k.text)
                         previousClick = clickTime
             k.drawKey(frame, (255, 255, 255), (0, 0, 0), alpha=alpha)
             alpha = 0.5

@@ -88,13 +88,27 @@ function setMode(m) {
   dwellKey = null;
   dwellDoneKey = null;
   dwellProgress = 0;
-  setStatus(m === 'touch' ? 'touch mode — hold fingertip on a key' : 'pinch mode — hover, then pinch + release');
+  setStatus(STATUS.hand());
 }
 modeTouch.addEventListener('click', () => setMode('touch'));
 modePinch.addEventListener('click', () => setMode('pinch'));
 
 function setStatus(msg) {
   statusEl.innerHTML = '<span class="dot"></span>' + msg;
+}
+
+const STATUS = {
+  hand: () => (mode === 'touch' ? 'hand detected — touch & hold a key' : 'hand detected — hover, then pinch + release'),
+  noHand: 'no hand — show palm 40-70cm, good light',
+  trackingError: 'tracking error — see console',
+};
+
+function commitType(key, now) {
+  // Single choke point for every typed key (gesture + click): buffer, cooldown, flash.
+  typeText(key.text);
+  lastTypedAt = now;
+  flashKey = key;
+  flashAt = now;
 }
 
 function dist(a, b) {
@@ -193,7 +207,7 @@ function detectFrame(now) {
         sThumb = lerpPt(sThumb, thumbTip, SMOOTH);
       }
       hasHand = true;
-      setStatus(mode === 'touch' ? 'hand detected — touch & hold a key' : 'hand detected — hover, then pinch + release');
+      setStatus(STATUS.hand());
     } else {
       hasHand = false;
       pinchHeld = false;
@@ -201,11 +215,11 @@ function detectFrame(now) {
       hoverStreak = 0;
       dwellKey = null;
       dwellProgress = 0;
-      setStatus('no hand — show palm 40-70cm, good light');
+      setStatus(STATUS.noHand);
     }
   } catch (e) {
     console.error(e);
-    setStatus('tracking error — see console');
+    setStatus(STATUS.trackingError);
   } finally {
     detectBusy = false;
   }
@@ -288,10 +302,7 @@ function draw() {
       } else {
         dwellProgress = Math.min(1, (now - dwellStart) / DWELL_MS);
         if (dwellProgress >= 1 && dwellDoneKey !== dwellKey && now - lastTypedAt > TYPE_COOLDOWN_MS) {
-          typeText(dwellKey.text);
-          lastTypedAt = now;
-          flashKey = dwellKey;
-          flashAt = now;
+          commitType(dwellKey, now);
           dwellDoneKey = dwellKey; // require leaving the key before it can type again
         }
       }
@@ -305,12 +316,7 @@ function draw() {
     // PINCH: type exactly once per pinch edge, locked to one key.
     if (hasHand && !pinchHeld && pinchD < PINCH_PX && stableHover) {
       const target = stableHover || (pinchCenter ? keyAt(pinchCenter.x, pinchCenter.y) : null);
-      if (target && now - lastTypedAt > TYPE_COOLDOWN_MS) {
-        typeText(target.text);
-        lastTypedAt = now;
-        flashKey = target;
-        flashAt = now;
-      }
+      if (target && now - lastTypedAt > TYPE_COOLDOWN_MS) commitType(target, now);
       pinchHeld = true;
       lockedKey = target; // lock: jitter to B/K while held is ignored
     } else if (pinchHeld && pinchD > PINCH_PX + PINCH_RELEASE_PAD) {
@@ -430,11 +436,7 @@ canvas.addEventListener('pointerup', (evt) => {
   if (!show) return;
   const p = canvasPoint(evt);
   const k = keyAt(p.x, p.y);
-  if (k) {
-    typeText(k.text);
-    flashKey = k;
-    flashAt = performance.now();
-  }
+  if (k) commitType(k, performance.now());
 });
 
 btnCamera.addEventListener('click', startCamera);

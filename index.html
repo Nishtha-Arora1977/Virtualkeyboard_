@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Virtual Keyboard — Hand Gesture Control</title>
+  <meta name="description" content="Touchless virtual keyboard using webcam + MediaPipe hand tracking. Vercel-ready web version of the OpenCV Python app." />
+  <link rel="stylesheet" href="styles.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs"
+      }
+    }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>Virtual Keyboard</h1>
+      <p>Touchless typing with hand gestures — pinch thumb + index to press a key</p>
+    </div>
+    <div class="topbar-actions">
+      <span id="statusPill" class="pill loading">Loading model…</span>
+      <span id="fpsPill" class="pill">0 FPS</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="stage-card">
+      <div class="textbox-row">
+        <div id="textbox" class="textbox" aria-live="polite"></div>
+        <div class="textbox-actions">
+          <button id="copyBtn" class="btn small" title="Copy text">Copy</button>
+          <button id="clearBtn" class="btn small ghost" title="Clear text">Clear</button>
+        </div>
+      </div>
+
+      <div class="canvas-wrap">
+        <video id="webcam" autoplay playsinline muted></video>
+        <canvas id="canvas" width="960" height="720"></canvas>
+        <div id="overlayMsg" class="overlay-msg">
+          <strong>Camera needed</strong>
+          <p>Click <b>Start camera</b> and allow webcam access.<br />Then show your hand and pinch thumb + index finger over a key.</p>
+          <button id="startBtn" class="btn primary">Start camera</button>
+          <p class="hint">Tip: you can also just click / tap keys with your mouse.</p>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button id="toggleKeysBtn" class="btn">Hide keys</button>
+        <button id="stopBtn" class="btn ghost">Stop camera</button>
+        <label class="check"><input type="checkbox" id="landmarksChk" checked /> Show hand landmarks</label>
+        <label class="check"><input type="checkbox" id="mirrorChk" checked /> Mirror video</label>
+      </div>
+      <p id="errorBox" class="error" hidden></p>
+    </section>
+
+    <aside class="side-card">
+      <h2>How it works</h2>
+      <ol>
+        <li>Video stays <b>in your browser</b> — nothing is uploaded.</li>
+        <li>MediaPipe Hand Landmarker tracks thumb tip (4) + index tip (8).</li>
+        <li>When the pinch distance &lt; threshold, the key under the midpoint is pressed (400&nbsp;ms debounce — same as the Python version).</li>
+        <li>Hover works with mouse <i>or</i> index fingertip.</li>
+      </ol>
+      <h2>Why Vercel failed before</h2>
+      <p>
+        The original <code>virtualkeyboard.py</code> is a desktop app: it uses
+        <code>cv2.VideoCapture(0)</code>, <code>cv2.imshow</code>,
+        <code>cv2.waitKey</code> and <code>pynput</code>. Vercel's cloud has no webcam,
+        no GUI window, and no long-running <code>while True</code> loop — so it can never
+        deploy as-is. This rewrite runs hand-tracking <b>client-side</b> in the browser,
+        which is exactly what Vercel is designed to host (static files).
+      </p>
+      <h2>Controls</h2>
+      <ul>
+        <li><code>Space</code> — add space (max 30 chars, like original)</li>
+        <li><code>&lt;--</code> — backspace</li>
+        <li><code>clr</code> — clear text box</li>
+        <li>Physical keyboard also types into the box</li>
+      </ul>
+      <p class="muted">Original Python sources kept in repo (<code>virtualkeyboard.py</code>, <code>HandTrackingModule.py</code>, <code>keys.py</code>) for reference.</p>
+    </aside>
+  </main>
+
+  <footer class="footer">Virtual Keyboard · MediaPipe Hands in-browser · Static site, deployable to Vercel with zero config</footer>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

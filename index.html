@@ -26,6 +26,8 @@
       <button id="btnClear">Clear Text</button>
       <span id="fps">0 FPS</span>
       <span id="status">camera off</span>
+      <span id="pinch">pinch: —</span>
+      <label>Pinch <input id="pinchRange" type="range" min="25" max="100" value="60" step="5" /> <span id="pinchVal">60px</span></label>
     </section>
 
     <section class="stage">
@@ -48,7 +50,7 @@
   </main>
 
   <footer>
-    <small>MediaPipe Hands via CDN • pinch threshold 50px • 400ms debounce • mirrored video</small>
+    <small>MediaPipe Hands via CDN • index over key + pinch to type • 400ms debounce • mirrored selfie view</small>
   </footer>
 
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>

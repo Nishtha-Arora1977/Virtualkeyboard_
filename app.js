@@ -1,5 +1,6 @@
-// Web port of virtualkeyboard.py — runs on Vercel as a static site.
-// Uses MediaPipe Hands (CDN) + getUserMedia. No build step.
+// Web port of virtualkeyboard.py — static, Vercel-ready.
+// Fixed: single mirror (canvas only), relaxed pinch (index-over-key + distance),
+// single getUserMedia stream, live pinch readout.
 
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
@@ -12,6 +13,9 @@ const btnBackspace = document.getElementById('btnBackspace');
 const btnSpace = document.getElementById('btnSpace');
 const fpsEl = document.getElementById('fps');
 const statusEl = document.getElementById('status');
+const pinchEl = document.getElementById('pinch');
+const pinchRange = document.getElementById('pinchRange');
+const pinchVal = document.getElementById('pinchVal');
 
 let show = false;
 let keys = [];
@@ -21,15 +25,21 @@ let thumbTip = { x: 0, y: 0 };
 let hasHand = false;
 let previousClick = 0;
 let lastTime = performance.now();
-let camera = null;
+let hands = null;
+let sending = false;
+let PINCH_PX = 60;
+const DEBOUNCE_MS = 400;
+
+pinchRange.addEventListener('input', () => {
+  PINCH_PX = Number(pinchRange.value);
+  pinchVal.textContent = `${PINCH_PX}px`;
+});
 
 function dist(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
 function buildKeys() {
-  // Mirror of Python layout: w=80,h=60 scaled to canvas 960px wide.
-  // Python used frameWidth*1.5; here we fit to canvas with scale factor.
   const w = 80, h = 48;
   const gap = 5;
   const startX = 40, startY = 200;
@@ -50,6 +60,11 @@ function isOver(k, x, y) {
   return x > k.x && x < k.x + k.w && y > k.y && y < k.y + k.h;
 }
 
+function keyAt(x, y) {
+  for (const k of keys) if (isOver(k, x, y)) return k;
+  return null;
+}
+
 function typeText(t) {
   if (t === '<--') textbox.value = textbox.value.slice(0, -1);
   else if (t === 'clr') textbox.value = '';
@@ -58,8 +73,8 @@ function typeText(t) {
   else if (t.length === 1) textbox.value += t;
 }
 
-function drawKey(k, highlight) {
-  ctx.fillStyle = highlight ? 'rgba(34,197,94,0.55)' : 'rgba(255,255,255,0.45)';
+function drawKey(k, highlight, pinching) {
+  ctx.fillStyle = pinching ? 'rgba(34,197,94,0.75)' : highlight ? 'rgba(34,197,94,0.45)' : 'rgba(255,255,255,0.55)';
   ctx.strokeStyle = 'rgba(0,0,0,0.8)';
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -70,37 +85,41 @@ function drawKey(k, highlight) {
   ctx.font = 'bold 20px system-ui';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  // Un-mirror text (canvas is flipped via CSS, so draw flipped back)
-  ctx.save();
-  ctx.translate(k.x + k.w / 2, k.y + k.h / 2);
-  ctx.scale(-1, 1);
-  ctx.fillText(k.text, 0, 0);
-  ctx.restore();
+  ctx.fillText(k.text, k.x + k.w / 2, k.y + k.h / 2);
 }
 
 function draw() {
-  // video is CSS-mirrored; canvas is also mirrored to match.
   ctx.clearRect(0, 0, W, H);
-  ctx.drawImage(video, 0, 0, W, H);
 
-  // FPS
+  // Mirrored selfie view: draw video flipped once, everything else in display coords.
+  if (video.readyState >= 2 && video.videoWidth > 0) {
+    ctx.save();
+    ctx.translate(W, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, 0, 0, W, H);
+    ctx.restore();
+  } else {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fff';
+    ctx.font = '22px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText('Press "Start Camera" and allow access', W / 2, H / 2 - 10);
+  }
+
   const now = performance.now();
   const dt = (now - lastTime) / 1000;
   lastTime = now;
-  const fps = dt > 0 ? Math.round(1 / dt) : 0;
-  fpsEl.textContent = `${fps} FPS`;
+  fpsEl.textContent = `${dt > 0 ? Math.round(1 / dt) : 0} FPS`;
 
-  // Text box strip (like Python textBox)
-  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  // Text strip
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
   ctx.fillRect(40, 140, 880, 48);
   ctx.fillStyle = '#000';
   ctx.font = '20px system-ui';
   ctx.textAlign = 'left';
-  ctx.save();
-  ctx.translate(480, 164);
-  ctx.scale(-1, 1);
-  ctx.fillText((textbox.value || '').split('').reverse().join(''), -430, 0);
-  ctx.restore();
+  ctx.textBaseline = 'middle';
+  ctx.fillText(textbox.value || '', 55, 164);
 
   if (!show) {
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
@@ -108,49 +127,55 @@ function draw() {
     ctx.fillStyle = '#fff';
     ctx.font = '24px system-ui';
     ctx.textAlign = 'center';
-    ctx.save();
-    ctx.translate(W / 2, H / 2);
-    ctx.scale(-1, 1);
-    ctx.fillText('Press "Show Keyboard" then pinch index + thumb over a key', 0, 0);
-    ctx.restore();
+    ctx.fillText('Press "Show Keyboard", then pinch index + thumb over a key', W / 2, H / 2);
     requestAnimationFrame(draw);
     return;
   }
 
-  // Pinch visual
-  if (hasHand && dist(signTip, thumbTip) < 50) {
-    ctx.strokeStyle = '#00ff00';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(signTip.x, signTip.y);
-    ctx.lineTo(thumbTip.x, thumbTip.y);
-    ctx.stroke();
-    const cx = (signTip.x + thumbTip.x) / 2;
-    const cy = (signTip.y + thumbTip.y) / 2;
-    ctx.fillStyle = '#00ff00';
-    ctx.beginPath();
-    ctx.arc(cx, cy, 6, 0, Math.PI * 2);
-    ctx.fill();
-  }
+  const pinchD = hasHand ? dist(signTip, thumbTip) : NaN;
+  pinchEl.textContent = hasHand ? `pinch: ${Math.round(pinchD)}px` : 'pinch: —';
+
+  const hoverKey = hasHand ? keyAt(signTip.x, signTip.y) : null;
+  const pinchCenter = hasHand ? { x: (signTip.x + thumbTip.x) / 2, y: (signTip.y + thumbTip.y) / 2 } : null;
+  const pinchKey = hasHand && pinchD < PINCH_PX
+    ? (hoverKey || (pinchCenter ? keyAt(pinchCenter.x, pinchCenter.y) : null))
+    : null;
 
   if (hasHand) {
-    ctx.fillStyle = '#ff00ff';
-    [signTip, thumbTip].forEach((p) => {
+    if (pinchD < PINCH_PX) {
+      ctx.strokeStyle = '#00ff00';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(signTip.x, signTip.y);
+      ctx.lineTo(thumbTip.x, thumbTip.y);
+      ctx.stroke();
+      ctx.fillStyle = '#00ff00';
+      ctx.beginPath();
+      ctx.arc(pinchCenter.x, pinchCenter.y, 7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = '#ff2fd6';
+    for (const p of [signTip, thumbTip]) {
       ctx.beginPath();
       ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
       ctx.fill();
-    });
+    }
+    // cursor ring on index finger
+    ctx.strokeStyle = pinchKey ? '#00ff00' : '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(signTip.x, signTip.y, 12, 0, Math.PI * 2);
+    ctx.stroke();
   }
 
   for (const k of keys) {
-    const hover = hasHand && (isOver(k, signTip.x, signTip.y));
-    drawKey(k, hover);
-    // pinch-to-type: both tips over same key + debounce
-    if (hasHand && isOver(k, signTip.x, signTip.y) && isOver(k, thumbTip.x, thumbTip.y)) {
-      const t = performance.now();
-      if (t - previousClick > 400) {
+    const isHover = hoverKey === k;
+    const isPinch = pinchKey === k;
+    drawKey(k, isHover, isPinch);
+    if (isPinch) {
+      if (now - previousClick > DEBOUNCE_MS) {
         typeText(k.text);
-        previousClick = t;
+        previousClick = now;
       }
     }
   }
@@ -159,67 +184,69 @@ function draw() {
 }
 
 function onResults(results) {
+  sending = false;
   if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
     const lm = results.multiHandLandmarks[0];
-    // landmarks are normalized 0..1; scale to canvas. Note: video is mirrored
-    // via CSS, MediaPipe coords are unmirrored, so flip x.
-    const sx = (1 - lm[8].x) * W;
-    const sy = lm[8].y * H;
-    const tx = (1 - lm[4].x) * W;
-    const ty = lm[4].y * H;
-    signTip = { x: sx, y: sy };
-    thumbTip = { x: tx, y: ty };
+    // Display coords are mirrored (selfie view), so flip x once.
+    signTip = { x: (1 - lm[8].x) * W, y: lm[8].y * H };
+    thumbTip = { x: (1 - lm[4].x) * W, y: lm[4].y * H };
     hasHand = true;
-    statusEl.textContent = 'hand detected';
+    statusEl.textContent = 'hand detected — pinch over a key';
   } else {
     hasHand = false;
-    statusEl.textContent = 'no hand';
+    statusEl.textContent = 'no hand — show your palm';
   }
+}
+
+async function pump() {
+  // Single steady loop: send current video frame when model is idle.
+  if (hands && video.readyState >= 2 && !sending) {
+    sending = true;
+    try {
+      await hands.send({ image: video });
+    } catch (e) {
+      sending = false;
+    }
+  }
+  setTimeout(pump, 33);
 }
 
 async function startCamera() {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 960, height: 540 } });
+    statusEl.textContent = 'requesting camera…';
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 960 }, height: { ideal: 540 } }, audio: false });
     video.srcObject = stream;
     await video.play();
-    statusEl.textContent = 'camera on — loading hand model…';
 
-    const hands = new Hands({
+    statusEl.textContent = 'loading hand model…';
+    hands = new Hands({
       locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}`,
     });
-    hands.setOptions({ maxNumHands: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.5 });
+    hands.setOptions({ maxNumHands: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.5 });
     hands.onResults(onResults);
 
-    camera = new Camera(video, {
-      onFrame: async () => { await hands.send({ image: video }); },
-      width: 960,
-      height: 540,
-    });
-    camera.start();
-    statusEl.textContent = 'camera on';
+    // warm up + start pump
+    pump();
+    statusEl.textContent = 'camera on — show your hand';
     btnCamera.textContent = 'Restart Camera';
   } catch (e) {
     statusEl.textContent = 'camera blocked: ' + e.message;
   }
 }
 
-// Mouse / touch fallback (canvas coords account for CSS mirror)
 function canvasPoint(evt) {
   const r = canvas.getBoundingClientRect();
-  const cx = (evt.clientX - r.left) * (W / r.width);
-  // mirrored display → flip x back to internal coords
-  return { x: W - cx, y: (evt.clientY - r.top) * (H / r.height) };
+  return {
+    x: (evt.clientX - r.left) * (W / r.width),
+    y: (evt.clientY - r.top) * (H / r.height),
+  };
 }
 
 canvas.addEventListener('pointerup', (evt) => {
   if (!show) return;
   const p = canvasPoint(evt);
-  for (const k of keys) {
-    if (isOver(k, p.x, p.y)) {
-      typeText(k.text);
-      break;
-    }
-  }
+  const k = keyAt(p.x, p.y);
+  if (k) typeText(k.text);
 });
 
 btnCamera.addEventListener('click', startCamera);
@@ -235,3 +262,8 @@ keys = buildKeys();
 W = canvas.width;
 H = canvas.height;
 requestAnimationFrame(draw);
+
+// Expose for headless trial runs (node): isOver/keyAt/dist/type logic.
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { buildKeys, isOver, keyAt, dist, typeText };
+}

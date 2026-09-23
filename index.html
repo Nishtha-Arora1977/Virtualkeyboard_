@@ -24,11 +24,25 @@
       <button id="btnCamera">Start Camera</button>
       <button id="btnShow">Show Keyboard</button>
       <button id="btnClear">Clear Text</button>
+      <button id="btnTest" title="Verify typing without camera">Test Typing (no camera)</button>
+      <button id="btnSim" title="Simulate a pinching hand">Simulate Hand</button>
       <span id="fps">0 FPS</span>
       <span id="status">camera off</span>
       <span id="pinch">pinch: —</span>
       <label>Pinch <input id="pinchRange" type="range" min="25" max="100" value="60" step="5" /> <span id="pinchVal">60px</span></label>
     </section>
+
+    <details class="debug">
+      <summary>Debug (open if hand not detected)</summary>
+      <div id="debugLog">waiting…</div>
+      <ol>
+        <li>Use <strong>HTTPS</strong> (Vercel URL) or <code>localhost</code> — camera is blocked on plain HTTP.</li>
+        <li>Allow camera when the browser asks. Check the camera icon in the address bar.</li>
+        <li>Click <strong>Test Typing</strong>: if a letter appears, clicking works and only hand tracking is broken.</li>
+        <li>Click <strong>Simulate Hand</strong>: a fake hand pinches the Q key — if Q types, pinch logic works.</li>
+        <li>Copy any red error lines below when asking for help.</li>
+      </ol>
+    </details>
 
     <section class="stage">
       <video id="video" playsinline muted></video>
@@ -54,8 +68,6 @@
   </footer>
 
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

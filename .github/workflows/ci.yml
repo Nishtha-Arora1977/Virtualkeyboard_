@@ -1,0 +1,23 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Python compile check
+        run: python3 -m py_compile virtualkeyboard.py keys.py HandTrackingModule.py
+      - name: JS syntax check
+        run: node --check app.js
+      - name: JSON check
+        run: python3 -c "import json; json.load(open('vercel.json')); json.load(open('package.json')); print('JSON OK')"

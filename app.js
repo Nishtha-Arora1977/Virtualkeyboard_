@@ -1,7 +1,7 @@
 // Web port of virtualkeyboard.py — static, Vercel-ready.
 // Hand tracking via @mediapipe/tasks-vision HandLandmarker (VIDEO mode).
-// Typing uses a pinch STATE MACHINE: one type per pinch (open -> pinch edge),
-// locked to a single key, with release hysteresis + global cooldown + smoothing.
+// Default mode is TOUCH: hold your index fingertip on a key to type (dwell).
+// Pinch mode (index+thumb) is still available via the Touch/Pinch toggle.
 
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 
@@ -19,8 +19,15 @@ const statusEl = document.getElementById('status');
 const pinchEl = document.getElementById('pinch');
 const pinchRange = document.getElementById('pinchRange');
 const pinchVal = document.getElementById('pinchVal');
+const pinchWrap = document.getElementById('pinchWrap');
+const dwellRange = document.getElementById('dwellRange');
+const dwellVal = document.getElementById('dwellVal');
+const dwellWrap = document.getElementById('dwellWrap');
+const modeTouch = document.getElementById('modeTouch');
+const modePinch = document.getElementById('modePinch');
 
 let show = false;
+let mode = 'touch'; // 'touch' (dwell, default) | 'pinch'
 let keys = [];
 let W = 960, H = 540;
 // Raw + smoothed fingertip positions (smoothing kills jitter -> fewer neighbor hits)
@@ -31,29 +38,56 @@ let sThumb = { x: 0, y: 0 };
 let smoothedInit = false;
 let hasHand = false;
 
-// Pinch state machine: only type on open->pinched EDGE, locked to one key per pinch.
-let pinchHeld = false;
-let lockedKey = null;
+// Shared typing state
 let lastTypedAt = 0;
 let hoverKey = null;
 let hoverStreak = 0;
 let flashKey = null;
 let flashAt = 0;
+// Pinch mode state: only type on open->pinched EDGE, locked to one key per pinch.
+let pinchHeld = false;
+let lockedKey = null;
+// Touch mode state: dwell progress per key, must leave key to retype.
+let dwellKey = null;
+let dwellStart = 0;
+let dwellDoneKey = null;
+let dwellProgress = 0;
 let fpsSmooth = 60;
 let lastTime = performance.now();
 let landmarker = null;
 let cameraOn = false;
 let lastVideoTime = -1;
 let PINCH_PX = 55;
+let DWELL_MS = 700;
 const PINCH_RELEASE_PAD = 18; // must open past PINCH+18 to re-arm (hysteresis)
 const TYPE_COOLDOWN_MS = 800; // min gap between any two types (fixes double "NN")
-const STABLE_FRAMES = 3; // index must sit on same key N frames before pinch counts
+const STABLE_FRAMES = 3; // index must sit on same key N frames before gesture counts
 const SMOOTH = 0.55;
 
 pinchRange.addEventListener('input', () => {
   PINCH_PX = Number(pinchRange.value);
   pinchVal.textContent = `${PINCH_PX}px`;
 });
+dwellRange.addEventListener('input', () => {
+  DWELL_MS = Number(dwellRange.value);
+  dwellVal.textContent = `${(DWELL_MS / 1000).toFixed(1)}s`;
+});
+function setMode(m) {
+  mode = m;
+  modeTouch.classList.toggle('seg-active', m === 'touch');
+  modePinch.classList.toggle('seg-active', m === 'pinch');
+  dwellWrap.hidden = m !== 'touch';
+  pinchWrap.hidden = m !== 'pinch';
+  // reset gesture state on switch so a held pinch/dwell can't carry over
+  pinchHeld = false;
+  lockedKey = null;
+  dwellKey = null;
+  dwellDoneKey = null;
+  dwellProgress = 0;
+  setStatus(m === 'touch' ? 'touch mode — hold fingertip on a key' : 'pinch mode — hover, then pinch + release');
+}
+modeTouch.addEventListener('click', () => setMode('touch'));
+modePinch.addEventListener('click', () => setMode('pinch'));
 
 function setStatus(msg) {
   statusEl.innerHTML = '<span class="dot"></span>' + msg;
@@ -101,10 +135,10 @@ function typeText(t) {
   else if (t.length === 1) textbox.value += t;
 }
 
-function drawKey(k, highlight, pinching, flashed) {
+function drawKey(k, highlight, active, flashed, progress) {
   ctx.fillStyle = flashed
     ? 'rgba(34,197,94,0.9)'
-    : pinching
+    : active
       ? 'rgba(34,197,94,0.7)'
       : highlight
         ? 'rgba(34,197,94,0.4)'
@@ -115,6 +149,11 @@ function drawKey(k, highlight, pinching, flashed) {
   ctx.rect(k.x, k.y, k.w, k.h);
   ctx.fill();
   ctx.stroke();
+  // dwell progress bar along the bottom of the hovered key (touch mode)
+  if (progress > 0 && progress < 1) {
+    ctx.fillStyle = '#22c55e';
+    ctx.fillRect(k.x, k.y + k.h - 6, k.w * progress, 6);
+  }
   ctx.fillStyle = '#000';
   ctx.font = 'bold 20px system-ui';
   ctx.textAlign = 'center';
@@ -140,13 +179,15 @@ function detectFrame() {
           sThumb = lerpPt(sThumb, thumbTip, SMOOTH);
         }
         hasHand = true;
-        setStatus( 'hand detected — hover, then pinch + release');
+        setStatus(mode === 'touch' ? 'hand detected — touch & hold a key' : 'hand detected — hover, then pinch + release');
       } else {
         hasHand = false;
         pinchHeld = false;
         lockedKey = null;
         hoverStreak = 0;
-        setStatus( 'no hand — show palm 40-70cm, good light');
+        dwellKey = null;
+        dwellProgress = 0;
+        setStatus('no hand — show palm 40-70cm, good light');
       }
     } catch (e) {
       console.error(e);
@@ -196,13 +237,17 @@ function draw() {
     ctx.fillStyle = '#fff';
     ctx.font = '24px system-ui';
     ctx.textAlign = 'center';
-    ctx.fillText('Press "Show Keyboard", hover a key, pinch then release', W / 2, H / 2);
+    ctx.fillText(mode === 'touch' ? 'Press "Show Keyboard", then touch & hold a key' : 'Press "Show Keyboard", hover a key, pinch then release', W / 2, H / 2);
     requestAnimationFrame(draw);
     return;
   }
 
   const pinchD = hasHand ? dist(sSign, sThumb) : NaN;
-  pinchEl.textContent = hasHand ? `pinch: ${Math.round(pinchD)}px` : 'pinch: —';
+  if (mode === 'touch') {
+    pinchEl.textContent = hasHand && dwellKey ? `hold: ${Math.round(dwellProgress * 100)}%` : 'touch: hold a key';
+  } else {
+    pinchEl.textContent = hasHand ? `pinch: ${Math.round(pinchD)}px` : 'pinch: —';
+  }
 
   // Hover stability: index must rest on the same key a few frames (kills flicker to B/K).
   const curHover = hasHand ? keyAt(sSign.x, sSign.y) : null;
@@ -214,24 +259,52 @@ function draw() {
   const stableHover = hoverStreak >= STABLE_FRAMES ? hoverKey : null;
   const pinchCenter = hasHand ? { x: (sSign.x + sThumb.x) / 2, y: (sSign.y + sThumb.y) / 2 } : null;
 
-  // EDGE-TRIGGERED pinch: type exactly once per pinch, locked to one key.
-  if (hasHand && !pinchHeld && pinchD < PINCH_PX && stableHover) {
-    const target = stableHover || (pinchCenter ? keyAt(pinchCenter.x, pinchCenter.y) : null);
-    if (target && now - lastTypedAt > TYPE_COOLDOWN_MS) {
-      typeText(target.text);
-      lastTypedAt = now;
-      flashKey = target;
-      flashAt = now;
+  let activeKey = null;
+
+  if (mode === 'touch') {
+    // TOUCH (dwell): hold index on one key -> types once. Must leave key to retype.
+    if (hasHand && stableHover) {
+      if (dwellKey !== stableHover) {
+        dwellKey = stableHover;
+        dwellStart = now;
+        dwellProgress = 0;
+      } else {
+        dwellProgress = Math.min(1, (now - dwellStart) / DWELL_MS);
+        if (dwellProgress >= 1 && dwellDoneKey !== dwellKey && now - lastTypedAt > TYPE_COOLDOWN_MS) {
+          typeText(dwellKey.text);
+          lastTypedAt = now;
+          flashKey = dwellKey;
+          flashAt = now;
+          dwellDoneKey = dwellKey; // require leaving the key before it can type again
+        }
+      }
+    } else {
+      dwellKey = null;
+      dwellProgress = 0;
+      if (!curHover) dwellDoneKey = null; // fully left keys -> re-arm
     }
-    pinchHeld = true;
-    lockedKey = target; // lock: jitter to B/K while held is ignored
-  } else if (pinchHeld && pinchD > PINCH_PX + PINCH_RELEASE_PAD) {
-    pinchHeld = false; // must fully release before next type (fixes "NN")
-    lockedKey = null;
+    activeKey = dwellKey && dwellProgress > 0 ? dwellKey : null;
+  } else {
+    // PINCH: type exactly once per pinch edge, locked to one key.
+    if (hasHand && !pinchHeld && pinchD < PINCH_PX && stableHover) {
+      const target = stableHover || (pinchCenter ? keyAt(pinchCenter.x, pinchCenter.y) : null);
+      if (target && now - lastTypedAt > TYPE_COOLDOWN_MS) {
+        typeText(target.text);
+        lastTypedAt = now;
+        flashKey = target;
+        flashAt = now;
+      }
+      pinchHeld = true;
+      lockedKey = target; // lock: jitter to B/K while held is ignored
+    } else if (pinchHeld && pinchD > PINCH_PX + PINCH_RELEASE_PAD) {
+      pinchHeld = false; // must fully release before next type (fixes "NN")
+      lockedKey = null;
+    }
+    activeKey = lockedKey;
   }
 
   if (hasHand) {
-    if (pinchD < PINCH_PX + PINCH_RELEASE_PAD) {
+    if (mode === 'pinch' && pinchD < PINCH_PX + PINCH_RELEASE_PAD) {
       ctx.strokeStyle = pinchHeld ? '#22c55e' : '#eab308';
       ctx.lineWidth = 3;
       ctx.beginPath();
@@ -245,22 +318,28 @@ function draw() {
         ctx.fill();
       }
     }
+    // Index fingertip is the cursor in both modes; thumb dot only matters for pinch.
     ctx.fillStyle = '#ff2fd6';
-    for (const p of [sSign, sThumb]) {
+    ctx.beginPath();
+    ctx.arc(sSign.x, sSign.y, 7, 0, Math.PI * 2);
+    ctx.fill();
+    if (mode === 'pinch') {
+      ctx.fillStyle = 'rgba(255,47,214,0.55)';
       ctx.beginPath();
-      ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+      ctx.arc(sThumb.x, sThumb.y, 6, 0, Math.PI * 2);
       ctx.fill();
     }
-    ctx.strokeStyle = lockedKey ? '#22c55e' : stableHover ? '#ffffff' : 'rgba(255,255,255,0.5)';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = activeKey ? '#22c55e' : stableHover ? '#ffffff' : 'rgba(255,255,255,0.5)';
+    ctx.lineWidth = activeKey ? 3 : 2;
     ctx.beginPath();
-    ctx.arc(sSign.x, sSign.y, 13, 0, Math.PI * 2);
+    ctx.arc(sSign.x, sSign.y, activeKey ? 16 : 13, 0, Math.PI * 2);
     ctx.stroke();
   }
 
   for (const k of keys) {
     const flashed = flashKey === k && now - flashAt < 350;
-    drawKey(k, stableHover === k, lockedKey === k, flashed);
+    const prog = mode === 'touch' && dwellKey === k ? dwellProgress : 0;
+    drawKey(k, stableHover === k, activeKey === k, flashed, prog);
   }
   if (flashKey && now - flashAt >= 350) flashKey = null;
 

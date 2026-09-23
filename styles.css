@@ -95,6 +95,9 @@ button:hover { filter: brightness(1.12); }
 button:active { transform: scale(0.97); }
 #btnShow { background: linear-gradient(135deg, #7c3aed, #4f46e5); }
 #btnClear { background: #2a3347; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.seg button { border-radius: 0; padding: 10px 14px; background: transparent; color: var(--muted); }
+.seg button.seg-active { background: var(--accent); color: #05240f; }
 .pill {
   background: rgba(0, 0, 0, 0.45);
   border: 1px solid var(--border);

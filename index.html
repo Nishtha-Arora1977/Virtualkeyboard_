@@ -17,13 +17,17 @@
 </head>
 <body>
   <header>
-    <h1>Virtual Keyboard <span class="badge">web • Vercel-ready</span></h1>
+    <span class="eyebrow">Hand tracking · in-browser</span>
+    <h1>Virtual <span class="grad">Keyboard</span> <span class="badge">live demo</span></h1>
     <p>
-      Browser port of the Python + OpenCV virtual keyboard.
-      Allow camera access, show the keyboard, then pinch
-      <strong>index fingertip + thumb</strong> over a key to type.
-      Mouse / touch click also works.
+      Hover your <strong>index finger</strong> over a key, then <strong>pinch with your thumb and release</strong>.
+      One pinch = one letter. Click / tap works too.
     </p>
+    <ol class="steps">
+      <li><b>1</b> Start Camera → Allow</li>
+      <li><b>2</b> Show Keyboard</li>
+      <li><b>3</b> Hover → pinch → release</li>
+    </ol>
   </header>
 
   <main>
@@ -31,10 +35,10 @@
       <button id="btnCamera">Start Camera</button>
       <button id="btnShow">Show Keyboard</button>
       <button id="btnClear">Clear Text</button>
-      <span id="fps">0 FPS</span>
-      <span id="status">camera off</span>
-      <span id="pinch">pinch: —</span>
-      <label>Pinch <input id="pinchRange" type="range" min="25" max="100" value="60" step="5" /> <span id="pinchVal">60px</span></label>
+      <span class="pill" id="fps">60 FPS</span>
+      <span class="pill" id="status"><span class="dot"></span>camera off</span>
+      <span class="pill" id="pinch">pinch: —</span>
+      <label>Pinch <input id="pinchRange" type="range" min="30" max="90" value="55" step="5" /> <span id="pinchVal">55px</span></label>
     </section>
 
     <section class="stage">
@@ -57,7 +61,7 @@
   </main>
 
   <footer>
-    <small>Hand tracking in-browser • index over key + pinch to type • 400ms debounce • mirrored selfie view</small>
+    <small>Hover → pinch → release to type (one pinch = one letter) • smoothed tracking • mirrored selfie view</small>
   </footer>
 
   <script type="module" src="app.js"></script>

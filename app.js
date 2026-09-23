@@ -1,5 +1,7 @@
 // Web port of virtualkeyboard.py — static, Vercel-ready.
 // Hand tracking via @mediapipe/tasks-vision HandLandmarker (VIDEO mode).
+// Typing uses a pinch STATE MACHINE: one type per pinch (open -> pinch edge),
+// locked to a single key, with release hysteresis + global cooldown + smoothing.
 
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 
@@ -21,24 +23,48 @@ const pinchVal = document.getElementById('pinchVal');
 let show = false;
 let keys = [];
 let W = 960, H = 540;
+// Raw + smoothed fingertip positions (smoothing kills jitter -> fewer neighbor hits)
 let signTip = { x: 0, y: 0 };
 let thumbTip = { x: 0, y: 0 };
+let sSign = { x: 0, y: 0 };
+let sThumb = { x: 0, y: 0 };
+let smoothedInit = false;
 let hasHand = false;
-let previousClick = 0;
+
+// Pinch state machine: only type on open->pinched EDGE, locked to one key per pinch.
+let pinchHeld = false;
+let lockedKey = null;
+let lastTypedAt = 0;
+let hoverKey = null;
+let hoverStreak = 0;
+let flashKey = null;
+let flashAt = 0;
+let fpsSmooth = 60;
 let lastTime = performance.now();
 let landmarker = null;
 let cameraOn = false;
 let lastVideoTime = -1;
-let PINCH_PX = 60;
-const DEBOUNCE_MS = 400;
+let PINCH_PX = 55;
+const PINCH_RELEASE_PAD = 18; // must open past PINCH+18 to re-arm (hysteresis)
+const TYPE_COOLDOWN_MS = 800; // min gap between any two types (fixes double "NN")
+const STABLE_FRAMES = 3; // index must sit on same key N frames before pinch counts
+const SMOOTH = 0.55;
 
 pinchRange.addEventListener('input', () => {
   PINCH_PX = Number(pinchRange.value);
   pinchVal.textContent = `${PINCH_PX}px`;
 });
 
+function setStatus(msg) {
+  statusEl.innerHTML = '<span class="dot"></span>' + msg;
+}
+
 function dist(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function lerpPt(prev, next, t) {
+  return { x: prev.x + (next.x - prev.x) * t, y: prev.y + (next.y - prev.y) * t };
 }
 
 function buildKeys() {
@@ -75,10 +101,16 @@ function typeText(t) {
   else if (t.length === 1) textbox.value += t;
 }
 
-function drawKey(k, highlight, pinching) {
-  ctx.fillStyle = pinching ? 'rgba(34,197,94,0.75)' : highlight ? 'rgba(34,197,94,0.45)' : 'rgba(255,255,255,0.55)';
-  ctx.strokeStyle = 'rgba(0,0,0,0.8)';
-  ctx.lineWidth = 2;
+function drawKey(k, highlight, pinching, flashed) {
+  ctx.fillStyle = flashed
+    ? 'rgba(34,197,94,0.9)'
+    : pinching
+      ? 'rgba(34,197,94,0.7)'
+      : highlight
+        ? 'rgba(34,197,94,0.4)'
+        : 'rgba(255,255,255,0.55)';
+  ctx.strokeStyle = flashed ? '#22c55e' : 'rgba(0,0,0,0.8)';
+  ctx.lineWidth = flashed ? 3 : 2;
   ctx.beginPath();
   ctx.rect(k.x, k.y, k.w, k.h);
   ctx.fill();
@@ -97,18 +129,28 @@ function detectFrame() {
       const res = landmarker.detectForVideo(video, performance.now());
       const lm = res.landmarks && res.landmarks[0];
       if (lm) {
-        // Mirrored selfie view: flip x once to match displayed canvas.
         signTip = { x: (1 - lm[8].x) * W, y: lm[8].y * H };
         thumbTip = { x: (1 - lm[4].x) * W, y: lm[4].y * H };
+        if (!smoothedInit) {
+          sSign = { ...signTip };
+          sThumb = { ...thumbTip };
+          smoothedInit = true;
+        } else {
+          sSign = lerpPt(sSign, signTip, SMOOTH);
+          sThumb = lerpPt(sThumb, thumbTip, SMOOTH);
+        }
         hasHand = true;
-        statusEl.textContent = 'hand detected — pinch over a key';
+        setStatus( 'hand detected — hover, then pinch + release');
       } else {
         hasHand = false;
-        statusEl.textContent = 'no hand — show palm 40-70cm, good light';
+        pinchHeld = false;
+        lockedKey = null;
+        hoverStreak = 0;
+        setStatus( 'no hand — show palm 40-70cm, good light');
       }
     } catch (e) {
       console.error(e);
-      statusEl.textContent = 'tracking error — see console';
+      setStatus( 'tracking error — see console');
     }
   }
 }
@@ -133,10 +175,12 @@ function draw() {
     ctx.fillText('Press "Start Camera" and allow access', W / 2, H / 2);
   }
 
+  // Smoothed FPS (was jumpy before)
   const now = performance.now();
-  const dt = (now - lastTime) / 1000;
+  const inst = 1000 / Math.max(1, now - lastTime);
   lastTime = now;
-  fpsEl.textContent = `${dt > 0 ? Math.round(1 / dt) : 0} FPS`;
+  fpsSmooth = fpsSmooth * 0.9 + inst * 0.1;
+  fpsEl.textContent = `${Math.round(fpsSmooth)} FPS`;
 
   ctx.fillStyle = 'rgba(255,255,255,0.92)';
   ctx.fillRect(40, 140, 880, 48);
@@ -152,53 +196,73 @@ function draw() {
     ctx.fillStyle = '#fff';
     ctx.font = '24px system-ui';
     ctx.textAlign = 'center';
-    ctx.fillText('Press "Show Keyboard", then pinch index + thumb over a key', W / 2, H / 2);
+    ctx.fillText('Press "Show Keyboard", hover a key, pinch then release', W / 2, H / 2);
     requestAnimationFrame(draw);
     return;
   }
 
-  const pinchD = hasHand ? dist(signTip, thumbTip) : NaN;
+  const pinchD = hasHand ? dist(sSign, sThumb) : NaN;
   pinchEl.textContent = hasHand ? `pinch: ${Math.round(pinchD)}px` : 'pinch: —';
 
-  const hoverKey = hasHand ? keyAt(signTip.x, signTip.y) : null;
-  const pinchCenter = hasHand ? { x: (signTip.x + thumbTip.x) / 2, y: (signTip.y + thumbTip.y) / 2 } : null;
-  const pinchKey = hasHand && pinchD < PINCH_PX
-    ? (hoverKey || (pinchCenter ? keyAt(pinchCenter.x, pinchCenter.y) : null))
-    : null;
+  // Hover stability: index must rest on the same key a few frames (kills flicker to B/K).
+  const curHover = hasHand ? keyAt(sSign.x, sSign.y) : null;
+  if (curHover === hoverKey && curHover) hoverStreak += 1;
+  else {
+    hoverKey = curHover;
+    hoverStreak = curHover ? 1 : 0;
+  }
+  const stableHover = hoverStreak >= STABLE_FRAMES ? hoverKey : null;
+  const pinchCenter = hasHand ? { x: (sSign.x + sThumb.x) / 2, y: (sSign.y + sThumb.y) / 2 } : null;
+
+  // EDGE-TRIGGERED pinch: type exactly once per pinch, locked to one key.
+  if (hasHand && !pinchHeld && pinchD < PINCH_PX && stableHover) {
+    const target = stableHover || (pinchCenter ? keyAt(pinchCenter.x, pinchCenter.y) : null);
+    if (target && now - lastTypedAt > TYPE_COOLDOWN_MS) {
+      typeText(target.text);
+      lastTypedAt = now;
+      flashKey = target;
+      flashAt = now;
+    }
+    pinchHeld = true;
+    lockedKey = target; // lock: jitter to B/K while held is ignored
+  } else if (pinchHeld && pinchD > PINCH_PX + PINCH_RELEASE_PAD) {
+    pinchHeld = false; // must fully release before next type (fixes "NN")
+    lockedKey = null;
+  }
 
   if (hasHand) {
-    if (pinchD < PINCH_PX) {
-      ctx.strokeStyle = '#00ff00';
+    if (pinchD < PINCH_PX + PINCH_RELEASE_PAD) {
+      ctx.strokeStyle = pinchHeld ? '#22c55e' : '#eab308';
       ctx.lineWidth = 3;
       ctx.beginPath();
-      ctx.moveTo(signTip.x, signTip.y);
-      ctx.lineTo(thumbTip.x, thumbTip.y);
+      ctx.moveTo(sSign.x, sSign.y);
+      ctx.lineTo(sThumb.x, sThumb.y);
       ctx.stroke();
-      ctx.fillStyle = '#00ff00';
-      ctx.beginPath();
-      ctx.arc(pinchCenter.x, pinchCenter.y, 7, 0, Math.PI * 2);
-      ctx.fill();
+      if (pinchCenter) {
+        ctx.fillStyle = pinchHeld ? '#22c55e' : '#eab308';
+        ctx.beginPath();
+        ctx.arc(pinchCenter.x, pinchCenter.y, 7, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
     ctx.fillStyle = '#ff2fd6';
-    for (const p of [signTip, thumbTip]) {
+    for (const p of [sSign, sThumb]) {
       ctx.beginPath();
       ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
       ctx.fill();
     }
-    ctx.strokeStyle = pinchKey ? '#00ff00' : '#ffffff';
+    ctx.strokeStyle = lockedKey ? '#22c55e' : stableHover ? '#ffffff' : 'rgba(255,255,255,0.5)';
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(signTip.x, signTip.y, 12, 0, Math.PI * 2);
+    ctx.arc(sSign.x, sSign.y, 13, 0, Math.PI * 2);
     ctx.stroke();
   }
 
   for (const k of keys) {
-    drawKey(k, hoverKey === k, pinchKey === k);
-    if (pinchKey === k && now - previousClick > DEBOUNCE_MS) {
-      typeText(k.text);
-      previousClick = now;
-    }
+    const flashed = flashKey === k && now - flashAt < 350;
+    drawKey(k, stableHover === k, lockedKey === k, flashed);
   }
+  if (flashKey && now - flashAt >= 350) flashKey = null;
 
   requestAnimationFrame(draw);
 }
@@ -231,10 +295,10 @@ async function createLandmarker() {
 async function startCamera() {
   try {
     if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-      statusEl.textContent = 'camera needs HTTPS — open the Vercel https URL';
+      setStatus( 'camera needs HTTPS — open the Vercel https URL');
       return;
     }
-    statusEl.textContent = 'requesting camera…';
+    setStatus( 'requesting camera…');
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 960 }, height: { ideal: 540 } },
       audio: false,
@@ -244,17 +308,17 @@ async function startCamera() {
     await video.play();
 
     if (!landmarker) {
-      statusEl.textContent = 'loading hand model…';
+      setStatus( 'loading hand model…');
       landmarker = await createLandmarker();
     }
     cameraOn = true;
-    statusEl.textContent = 'camera on — show your palm';
+    setStatus( 'camera on — show your palm');
     btnCamera.textContent = 'Restart Camera';
   } catch (e) {
     console.error(e);
-    if (e.name === 'NotAllowedError') statusEl.textContent = 'camera denied — click the camera icon → Allow, then Restart';
-    else if (e.name === 'NotFoundError') statusEl.textContent = 'no camera found';
-    else statusEl.textContent = 'failed: ' + (e.message || e);
+    if (e.name === 'NotAllowedError') setStatus( 'camera denied — click the camera icon → Allow, then Restart');
+    else if (e.name === 'NotFoundError') setStatus( 'no camera found');
+    else setStatus('failed: ' + (e.message || e));
   }
 }
 
@@ -270,7 +334,11 @@ canvas.addEventListener('pointerup', (evt) => {
   if (!show) return;
   const p = canvasPoint(evt);
   const k = keyAt(p.x, p.y);
-  if (k) typeText(k.text);
+  if (k) {
+    typeText(k.text);
+    flashKey = k;
+    flashAt = performance.now();
+  }
 });
 
 btnCamera.addEventListener('click', startCamera);

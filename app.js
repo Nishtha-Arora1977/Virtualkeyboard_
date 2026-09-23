@@ -1,5 +1,7 @@
 // Web port of virtualkeyboard.py — static, Vercel-ready.
-// Debug build: on-screen log, HTTPS/camera checks, no-camera test + hand simulation.
+// Hand tracking via @mediapipe/tasks-vision HandLandmarker (VIDEO mode).
+
+import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
@@ -8,8 +10,6 @@ const textbox = document.getElementById('textbox');
 const btnCamera = document.getElementById('btnCamera');
 const btnShow = document.getElementById('btnShow');
 const btnClear = document.getElementById('btnClear');
-const btnTest = document.getElementById('btnTest');
-const btnSim = document.getElementById('btnSim');
 const btnBackspace = document.getElementById('btnBackspace');
 const btnSpace = document.getElementById('btnSpace');
 const fpsEl = document.getElementById('fps');
@@ -17,7 +17,6 @@ const statusEl = document.getElementById('status');
 const pinchEl = document.getElementById('pinch');
 const pinchRange = document.getElementById('pinchRange');
 const pinchVal = document.getElementById('pinchVal');
-const debugLog = document.getElementById('debugLog');
 
 let show = false;
 let keys = [];
@@ -25,28 +24,13 @@ let W = 960, H = 540;
 let signTip = { x: 0, y: 0 };
 let thumbTip = { x: 0, y: 0 };
 let hasHand = false;
-let simulated = false;
 let previousClick = 0;
 let lastTime = performance.now();
-let hands = null;
-let sending = false;
-let framesSent = 0;
-let resultsSeen = 0;
+let landmarker = null;
+let cameraOn = false;
+let lastVideoTime = -1;
 let PINCH_PX = 60;
 const DEBOUNCE_MS = 400;
-
-function log(msg, isErr) {
-  const t = new Date().toLocaleTimeString();
-  const line = `[${t}] ${msg}`;
-  if (debugLog) {
-    debugLog.textContent = (debugLog.textContent === 'waiting…' ? '' : debugLog.textContent + '\n') + line;
-    debugLog.scrollTop = debugLog.scrollHeight;
-  }
-  if (isErr) console.error(line);
-  else console.log(line);
-}
-
-window.addEventListener('error', (e) => log('Window error: ' + (e.message || e.error), true));
 
 pinchRange.addEventListener('input', () => {
   PINCH_PX = Number(pinchRange.value);
@@ -106,7 +90,32 @@ function drawKey(k, highlight, pinching) {
   ctx.fillText(k.text, k.x + k.w / 2, k.y + k.h / 2);
 }
 
+function detectFrame() {
+  if (landmarker && cameraOn && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+    try {
+      const res = landmarker.detectForVideo(video, performance.now());
+      const lm = res.landmarks && res.landmarks[0];
+      if (lm) {
+        // Mirrored selfie view: flip x once to match displayed canvas.
+        signTip = { x: (1 - lm[8].x) * W, y: lm[8].y * H };
+        thumbTip = { x: (1 - lm[4].x) * W, y: lm[4].y * H };
+        hasHand = true;
+        statusEl.textContent = 'hand detected — pinch over a key';
+      } else {
+        hasHand = false;
+        statusEl.textContent = 'no hand — show palm 40-70cm, good light';
+      }
+    } catch (e) {
+      console.error(e);
+      statusEl.textContent = 'tracking error — see console';
+    }
+  }
+}
+
 function draw() {
+  detectFrame();
+
   ctx.clearRect(0, 0, W, H);
 
   if (video.readyState >= 2 && video.videoWidth > 0) {
@@ -121,10 +130,7 @@ function draw() {
     ctx.fillStyle = '#fff';
     ctx.font = '22px system-ui';
     ctx.textAlign = 'center';
-    ctx.fillText('Press "Start Camera" and allow access', W / 2, H / 2 - 10);
-    ctx.font = '16px system-ui';
-    ctx.fillStyle = '#9aa5bb';
-    ctx.fillText('No camera? Use Test Typing / Simulate Hand below', W / 2, H / 2 + 18);
+    ctx.fillText('Press "Start Camera" and allow access', W / 2, H / 2);
   }
 
   const now = performance.now();
@@ -173,7 +179,7 @@ function draw() {
       ctx.arc(pinchCenter.x, pinchCenter.y, 7, 0, Math.PI * 2);
       ctx.fill();
     }
-    ctx.fillStyle = simulated ? '#ff9f00' : '#ff2fd6';
+    ctx.fillStyle = '#ff2fd6';
     for (const p of [signTip, thumbTip]) {
       ctx.beginPath();
       ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
@@ -187,12 +193,9 @@ function draw() {
   }
 
   for (const k of keys) {
-    const isHover = hoverKey === k;
-    const isPinch = pinchKey === k;
-    drawKey(k, isHover, isPinch);
-    if (isPinch && now - previousClick > DEBOUNCE_MS) {
+    drawKey(k, hoverKey === k, pinchKey === k);
+    if (pinchKey === k && now - previousClick > DEBOUNCE_MS) {
       typeText(k.text);
-      log(`typed '${k.text}' via pinch (dist ${Math.round(pinchD)}px)`);
       previousClick = now;
     }
   }
@@ -200,98 +203,58 @@ function draw() {
   requestAnimationFrame(draw);
 }
 
-function onResults(results) {
-  sending = false;
-  resultsSeen += 1;
-  if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-    const lm = results.multiHandLandmarks[0];
-    signTip = { x: (1 - lm[8].x) * W, y: lm[8].y * H };
-    thumbTip = { x: (1 - lm[4].x) * W, y: lm[4].y * H };
-    if (!hasHand) log('hand detected');
-    hasHand = true;
-    simulated = false;
-    statusEl.textContent = 'hand detected — pinch over a key';
-  } else {
-    if (hasHand && !simulated) log('hand lost');
-    if (!simulated) {
-      hasHand = false;
-      statusEl.textContent = 'no hand — show palm 40-70cm, good light';
-    }
+async function createLandmarker() {
+  const vision = await FilesetResolver.forVisionTasks(
+    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+  );
+  const options = {
+    baseOptions: {
+      modelAssetPath:
+        'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+      delegate: 'GPU',
+    },
+    runningMode: 'VIDEO',
+    numHands: 1,
+    minHandDetectionConfidence: 0.5,
+    minHandPresenceConfidence: 0.5,
+    minTrackingConfidence: 0.5,
+  };
+  try {
+    return await HandLandmarker.createFromOptions(vision, options);
+  } catch (e) {
+    console.warn('GPU delegate failed, retrying CPU', e);
+    options.baseOptions.delegate = 'CPU';
+    return await HandLandmarker.createFromOptions(vision, options);
   }
-}
-
-async function pump() {
-  if (hands && video.readyState >= 2 && !sending) {
-    sending = true;
-    framesSent += 1;
-    try {
-      await hands.send({ image: video });
-    } catch (e) {
-      sending = false;
-      log('hands.send failed: ' + e.message, true);
-      statusEl.textContent = 'model error: ' + e.message;
-      return;
-    }
-    if (framesSent === 1) log('first frame sent to model');
-    if (framesSent === 30) {
-      log(`30 frames sent, results callbacks: ${resultsSeen}, video ${video.videoWidth}x${video.videoHeight}, readyState ${video.readyState}`);
-      if (resultsSeen === 0) {
-        log('WARNING: model got 30 frames but zero callbacks — CDN/WASM likely blocked. Try Chrome, disable adblock, check console.', true);
-        statusEl.textContent = 'model not responding — see Debug';
-      }
-    }
-  }
-  setTimeout(pump, 50);
 }
 
 async function startCamera() {
-  log(`Start clicked. protocol=${location.protocol}, host=${location.host}`);
-  if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-    const msg = 'Camera needs HTTPS or localhost — you are on ' + location.protocol;
-    log(msg, true);
-    statusEl.textContent = msg;
-  }
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    const msg = 'getUserMedia not supported in this browser — use Chrome/Edge on HTTPS';
-    log(msg, true);
-    statusEl.textContent = msg;
-    return;
-  }
-  if (typeof Hands === 'undefined') {
-    const msg = 'MediaPipe Hands CDN failed to load (Hands undefined) — adblock or offline?';
-    log(msg, true);
-    statusEl.textContent = msg;
-    return;
-  }
   try {
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+      statusEl.textContent = 'camera needs HTTPS — open the Vercel https URL';
+      return;
+    }
     statusEl.textContent = 'requesting camera…';
-    log('requesting getUserMedia…');
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 960 }, height: { ideal: 540 } }, audio: false });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 960 }, height: { ideal: 540 } },
+      audio: false,
+    });
     video.srcObject = stream;
     video.muted = true;
     await video.play();
-    log(`camera on: ${video.videoWidth}x${video.videoHeight}, readyState ${video.readyState}`);
 
-    statusEl.textContent = 'loading hand model…';
-    log('creating Hands, loading WASM from jsdelivr…');
-    hands = new Hands({
-      locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}`,
-    });
-    hands.setOptions({ maxNumHands: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
-    hands.onResults(onResults);
-
-    framesSent = 0;
-    resultsSeen = 0;
-    sending = false;
-    pump();
+    if (!landmarker) {
+      statusEl.textContent = 'loading hand model…';
+      landmarker = await createLandmarker();
+    }
+    cameraOn = true;
     statusEl.textContent = 'camera on — show your palm';
     btnCamera.textContent = 'Restart Camera';
-    log('model created, pump started — show your palm 40-70cm in good light');
   } catch (e) {
-    log('camera/model failed: ' + (e.name + ': ' + e.message), true);
-    if (e.name === 'NotAllowedError') statusEl.textContent = 'camera denied — click the camera icon in address bar → Allow, then Restart';
+    console.error(e);
+    if (e.name === 'NotAllowedError') statusEl.textContent = 'camera denied — click the camera icon → Allow, then Restart';
     else if (e.name === 'NotFoundError') statusEl.textContent = 'no camera found';
-    else statusEl.textContent = 'failed: ' + e.message;
+    else statusEl.textContent = 'failed: ' + (e.message || e);
   }
 }
 
@@ -307,56 +270,19 @@ canvas.addEventListener('pointerup', (evt) => {
   if (!show) return;
   const p = canvasPoint(evt);
   const k = keyAt(p.x, p.y);
-  if (k) {
-    typeText(k.text);
-    log(`typed '${k.text}' via click`);
-  }
+  if (k) typeText(k.text);
 });
 
 btnCamera.addEventListener('click', startCamera);
 btnShow.addEventListener('click', () => {
   show = !show;
   btnShow.textContent = show ? 'Hide Keyboard' : 'Show Keyboard';
-  log('keyboard ' + (show ? 'shown' : 'hidden'));
 });
 btnClear.addEventListener('click', () => { textbox.value = ''; });
 btnBackspace.addEventListener('click', () => { textbox.value = textbox.value.slice(0, -1); });
 btnSpace.addEventListener('click', () => { if (textbox.value.length < 30) textbox.value += ' '; });
 
-btnTest.addEventListener('click', () => {
-  if (!show) { show = true; btnShow.textContent = 'Hide Keyboard'; }
-  typeText('Q');
-  log("Test Typing: typed 'Q' without camera — if you see Q above, clicking works; only hand tracking is broken.");
-});
-
-btnSim.addEventListener('click', () => {
-  if (!show) { show = true; btnShow.textContent = 'Hide Keyboard'; }
-  const q = keys.find((k) => k.text === 'Q');
-  signTip = { x: q.x + q.w / 2, y: q.y + q.h / 2 };
-  thumbTip = { x: signTip.x + 12, y: signTip.y + 8 };
-  hasHand = true;
-  simulated = true;
-  previousClick = 0; // force immediate type on next frame
-  statusEl.textContent = 'simulated hand — should type Q';
-  log(`Simulate Hand: fake pinch on Q (dist ${Math.round(dist(signTip, thumbTip))}px) — watch for Q in a second; press again to stop.`);
-  if (btnSim.dataset.on === '1') {
-    btnSim.dataset.on = '';
-    hasHand = false;
-    simulated = false;
-    btnSim.textContent = 'Simulate Hand';
-    statusEl.textContent = 'simulation off';
-  } else {
-    btnSim.dataset.on = '1';
-    btnSim.textContent = 'Stop Simulation';
-  }
-});
-
 keys = buildKeys();
 W = canvas.width;
 H = canvas.height;
-log(`app loaded. ${keys.length} keys. protocol=${location.protocol}. Click Show Keyboard, then Test Typing.`);
 requestAnimationFrame(draw);
-
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { buildKeys, isOver, keyAt, dist, typeText };
-}

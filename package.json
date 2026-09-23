@@ -5,7 +5,7 @@
   "type": "commonjs",
   "scripts": {
     "dev": "npx serve@14 . -l 3000",
-    "check": "node --check app.js && echo 'JS OK'"
+    "check": "cp app.js /tmp/check.mjs && node --check /tmp/check.mjs && echo 'JS OK'"
   },
   "license": "MIT"
 }

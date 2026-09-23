@@ -18,6 +18,6 @@ jobs:
       - name: Python compile check
         run: python3 -m py_compile virtualkeyboard.py keys.py HandTrackingModule.py
       - name: JS syntax check
-        run: node --check app.js
+        run: cp app.js /tmp/check.mjs && node --check /tmp/check.mjs
       - name: JSON check
         run: python3 -c "import json; json.load(open('vercel.json')); json.load(open('package.json')); print('JSON OK')"

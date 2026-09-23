@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Virtual Keyboard — Hand Gesture (Web)</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Virtual Keyboard <span class="badge">web • Vercel-ready</span></h1>
+    <p>
+      Browser port of the Python + OpenCV virtual keyboard.
+      Allow camera access, show the keyboard, then pinch
+      <strong>index fingertip + thumb</strong> over a key to type.
+      Mouse / touch click also works.
+    </p>
+  </header>
+
+  <main>
+    <section class="controls">
+      <button id="btnCamera">Start Camera</button>
+      <button id="btnShow">Show Keyboard</button>
+      <button id="btnClear">Clear Text</button>
+      <span id="fps">0 FPS</span>
+      <span id="status">camera off</span>
+    </section>
+
+    <section class="stage">
+      <video id="video" playsinline muted></video>
+      <canvas id="canvas" width="960" height="540"></canvas>
+    </section>
+
+    <section class="output">
+      <label for="textbox">Typed text (max 30 chars)</label>
+      <div class="row">
+        <input id="textbox" type="text" maxlength="30" readonly placeholder="Pinch a key or click…" />
+        <button id="btnBackspace" title="Backspace">&larr;</button>
+        <button id="btnSpace" title="Space">Space</button>
+      </div>
+      <p class="hint">
+        Python desktop version still in repo: <code>virtualkeyboard.py</code> (needs webcam + OpenCV locally).
+        This web version runs fully on Vercel — no server, no build step.
+      </p>
+    </section>
+  </main>
+
+  <footer>
+    <small>MediaPipe Hands via CDN • pinch threshold 50px • 400ms debounce • mirrored video</small>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

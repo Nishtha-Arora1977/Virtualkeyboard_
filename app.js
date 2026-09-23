@@ -53,10 +53,14 @@ let dwellStart = 0;
 let dwellDoneKey = null;
 let dwellProgress = 0;
 let fpsSmooth = 60;
+let trackSmooth = 0;
 let lastTime = performance.now();
 let landmarker = null;
 let cameraOn = false;
 let lastVideoTime = -1;
+let lastDetectAt = 0;
+let detectBusy = false;
+let TRACK_MS = 70; // ~14 inferences/sec: tracking decoupled from 60fps render
 let PINCH_PX = 55;
 let DWELL_MS = 700;
 const PINCH_RELEASE_PAD = 18; // must open past PINCH+18 to re-arm (hysteresis)
@@ -161,43 +165,55 @@ function drawKey(k, highlight, active, flashed, progress) {
   ctx.fillText(k.text, k.x + k.w / 2, k.y + k.h / 2);
 }
 
-function detectFrame() {
-  if (landmarker && cameraOn && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
-    lastVideoTime = video.currentTime;
-    try {
-      const res = landmarker.detectForVideo(video, performance.now());
-      const lm = res.landmarks && res.landmarks[0];
-      if (lm) {
-        signTip = { x: (1 - lm[8].x) * W, y: lm[8].y * H };
-        thumbTip = { x: (1 - lm[4].x) * W, y: lm[4].y * H };
-        if (!smoothedInit) {
-          sSign = { ...signTip };
-          sThumb = { ...thumbTip };
-          smoothedInit = true;
-        } else {
-          sSign = lerpPt(sSign, signTip, SMOOTH);
-          sThumb = lerpPt(sThumb, thumbTip, SMOOTH);
-        }
-        hasHand = true;
-        setStatus(mode === 'touch' ? 'hand detected — touch & hold a key' : 'hand detected — hover, then pinch + release');
+function detectFrame(now) {
+  // Throttled: render runs at 60fps, tracking at ~14fps. Never overlap inferences.
+  if (!landmarker || !cameraOn || video.readyState < 2 || detectBusy) return;
+  if (video.currentTime === lastVideoTime) return;
+  if (now - lastDetectAt < TRACK_MS) return;
+  lastDetectAt = now;
+  lastVideoTime = video.currentTime;
+  detectBusy = true;
+  const t0 = performance.now();
+  try {
+    const res = landmarker.detectForVideo(video, t0);
+    const cost = performance.now() - t0;
+    // auto-tune: slow devices back off (50ms->20Hz, 70ms->14Hz, 120ms->8Hz)
+    TRACK_MS = cost > 90 ? 120 : cost > 50 ? 70 : 50;
+    trackSmooth = trackSmooth === 0 ? 1000 / Math.max(1, TRACK_MS) : trackSmooth * 0.85 + (1000 / Math.max(1, TRACK_MS)) * 0.15;
+    const lm = res.landmarks && res.landmarks[0];
+    if (lm) {
+      signTip = { x: (1 - lm[8].x) * W, y: lm[8].y * H };
+      thumbTip = { x: (1 - lm[4].x) * W, y: lm[4].y * H };
+      if (!smoothedInit) {
+        sSign = { ...signTip };
+        sThumb = { ...thumbTip };
+        smoothedInit = true;
       } else {
-        hasHand = false;
-        pinchHeld = false;
-        lockedKey = null;
-        hoverStreak = 0;
-        dwellKey = null;
-        dwellProgress = 0;
-        setStatus('no hand — show palm 40-70cm, good light');
+        sSign = lerpPt(sSign, signTip, SMOOTH);
+        sThumb = lerpPt(sThumb, thumbTip, SMOOTH);
       }
-    } catch (e) {
-      console.error(e);
-      setStatus( 'tracking error — see console');
+      hasHand = true;
+      setStatus(mode === 'touch' ? 'hand detected — touch & hold a key' : 'hand detected — hover, then pinch + release');
+    } else {
+      hasHand = false;
+      pinchHeld = false;
+      lockedKey = null;
+      hoverStreak = 0;
+      dwellKey = null;
+      dwellProgress = 0;
+      setStatus('no hand — show palm 40-70cm, good light');
     }
+  } catch (e) {
+    console.error(e);
+    setStatus('tracking error — see console');
+  } finally {
+    detectBusy = false;
   }
 }
 
 function draw() {
-  detectFrame();
+  const now = performance.now();
+  detectFrame(now);
 
   ctx.clearRect(0, 0, W, H);
 
@@ -216,12 +232,13 @@ function draw() {
     ctx.fillText('Press "Start Camera" and allow access', W / 2, H / 2);
   }
 
-  // Smoothed FPS (was jumpy before)
-  const now = performance.now();
+  // Smoothed render FPS; tracking rate shown separately (decoupled loops)
   const inst = 1000 / Math.max(1, now - lastTime);
   lastTime = now;
   fpsSmooth = fpsSmooth * 0.9 + inst * 0.1;
-  fpsEl.textContent = `${Math.round(fpsSmooth)} FPS`;
+  fpsEl.textContent = trackSmooth > 0
+    ? `${Math.round(fpsSmooth)} FPS · ${Math.round(trackSmooth)} track`
+    : `${Math.round(fpsSmooth)} FPS`;
 
   ctx.fillStyle = 'rgba(255,255,255,0.92)';
   ctx.fillRect(40, 140, 880, 48);
@@ -379,7 +396,7 @@ async function startCamera() {
     }
     setStatus( 'requesting camera…');
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 960 }, height: { ideal: 540 } },
+      video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
       audio: false,
     });
     video.srcObject = stream;

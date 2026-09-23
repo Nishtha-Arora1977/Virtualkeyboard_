@@ -20,29 +20,15 @@
     <span class="eyebrow">Hand tracking · in-browser</span>
     <h1>Virtual <span class="grad">Keyboard</span> <span class="badge">live demo</span></h1>
     <p>
-      Just <strong>touch a key with your index finger</strong> and hold — it types by itself.
-      Prefer pinch? Switch to <strong>Pinch mode</strong> below. Click / tap works too.
+      Start camera, show keyboard, and touch a key to type. Click / tap works too.
     </p>
-    <ol class="steps">
-      <li><b>1</b> Start Camera → Allow</li>
-      <li><b>2</b> Show Keyboard</li>
-      <li><b>3</b> Touch &amp; hold a key</li>
-    </ol>
   </header>
 
   <main>
     <section class="controls">
       <button id="btnCamera">Start Camera</button>
       <button id="btnShow">Show Keyboard</button>
-      <button id="btnClear">Clear Text</button>
-      <span class="seg">
-        <button id="modeTouch" class="seg-active">Touch</button><button id="modePinch">Pinch</button>
-      </span>
-      <span class="pill" id="fps">60 FPS</span>
-      <span class="pill" id="status"><span class="dot"></span>camera off</span>
-      <span class="pill" id="pinch">touch: —</span>
-      <label id="dwellWrap">Hold <input id="dwellRange" type="range" min="400" max="1200" value="700" step="100" /> <span id="dwellVal">0.7s</span></label>
-      <label id="pinchWrap" hidden>Pinch <input id="pinchRange" type="range" min="30" max="90" value="55" step="5" /> <span id="pinchVal">55px</span></label>
+      <button id="btnClear">Clear</button>
     </section>
 
     <section class="stage">
@@ -51,10 +37,10 @@
     </section>
 
     <section class="output">
-      <label for="textbox">Typed text (max 30 chars)</label>
+      <label for="textbox">Typed text</label>
       <div class="row">
-        <input id="textbox" type="text" maxlength="30" readonly placeholder="Touch a key or click…" />
-        <button id="btnBackspace" title="Backspace">&larr;</button>
+        <input id="textbox" type="text" maxlength="30" readonly placeholder="Type with your hand…" />
+        <button id="btnBackspace" title="Backspace">⌫</button>
         <button id="btnSpace" title="Space">Space</button>
       </div>
       <p class="hint">
@@ -65,7 +51,7 @@
   </main>
 
   <footer>
-    <small>Touch &amp; hold to type (default) or switch to Pinch • one gesture = one letter • mirrored selfie view</small>
+    <small>Mirrored selfie view • one gesture = one letter</small>
   </footer>
 
   <script type="module" src="app.js"></script>

@@ -14,20 +14,9 @@ const btnShow = document.getElementById('btnShow');
 const btnClear = document.getElementById('btnClear');
 const btnBackspace = document.getElementById('btnBackspace');
 const btnSpace = document.getElementById('btnSpace');
-const fpsEl = document.getElementById('fps');
-const statusEl = document.getElementById('status');
-const pinchEl = document.getElementById('pinch');
-const pinchRange = document.getElementById('pinchRange');
-const pinchVal = document.getElementById('pinchVal');
-const pinchWrap = document.getElementById('pinchWrap');
-const dwellRange = document.getElementById('dwellRange');
-const dwellVal = document.getElementById('dwellVal');
-const dwellWrap = document.getElementById('dwellWrap');
-const modeTouch = document.getElementById('modeTouch');
-const modePinch = document.getElementById('modePinch');
 
 let show = false;
-let mode = 'touch'; // 'touch' (dwell, default) | 'pinch'
+let mode = 'touch'; // fixed touch mode
 let keys = [];
 let W = 960, H = 540;
 // Raw + smoothed fingertip positions (smoothing kills jitter -> fewer neighbor hits)
@@ -68,34 +57,7 @@ const TYPE_COOLDOWN_MS = 800; // min gap between any two types (fixes double "NN
 const STABLE_FRAMES = 3; // index must sit on same key N frames before gesture counts
 const SMOOTH = 0.55;
 
-pinchRange.addEventListener('input', () => {
-  PINCH_PX = Number(pinchRange.value);
-  pinchVal.textContent = `${PINCH_PX}px`;
-});
-dwellRange.addEventListener('input', () => {
-  DWELL_MS = Number(dwellRange.value);
-  dwellVal.textContent = `${(DWELL_MS / 1000).toFixed(1)}s`;
-});
-function setMode(m) {
-  mode = m;
-  modeTouch.classList.toggle('seg-active', m === 'touch');
-  modePinch.classList.toggle('seg-active', m === 'pinch');
-  dwellWrap.hidden = m !== 'touch';
-  pinchWrap.hidden = m !== 'pinch';
-  // reset gesture state on switch so a held pinch/dwell can't carry over
-  pinchHeld = false;
-  lockedKey = null;
-  dwellKey = null;
-  dwellDoneKey = null;
-  dwellProgress = 0;
-  setStatus(STATUS.hand());
-}
-modeTouch.addEventListener('click', () => setMode('touch'));
-modePinch.addEventListener('click', () => setMode('pinch'));
-
-function setStatus(msg) {
-  statusEl.innerHTML = '<span class="dot"></span>' + msg;
-}
+function setStatus(msg) { /* no-op UI status removed */ }
 
 const STATUS = {
   hand: () => (mode === 'touch' ? 'hand detected — touch & hold a key' : 'hand detected — hover, then pinch + release'),
@@ -246,13 +208,10 @@ function draw() {
     ctx.fillText('Press "Start Camera" and allow access', W / 2, H / 2);
   }
 
-  // Smoothed render FPS; tracking rate shown separately (decoupled loops)
+  // Update timing (no UI FPS display)
   const inst = 1000 / Math.max(1, now - lastTime);
   lastTime = now;
   fpsSmooth = fpsSmooth * 0.9 + inst * 0.1;
-  fpsEl.textContent = trackSmooth > 0
-    ? `${Math.round(fpsSmooth)} FPS · ${Math.round(trackSmooth)} track`
-    : `${Math.round(fpsSmooth)} FPS`;
 
   ctx.fillStyle = 'rgba(255,255,255,0.92)';
   ctx.fillRect(40, 140, 880, 48);
@@ -268,17 +227,12 @@ function draw() {
     ctx.fillStyle = '#fff';
     ctx.font = '24px system-ui';
     ctx.textAlign = 'center';
-    ctx.fillText(mode === 'touch' ? 'Press "Show Keyboard", then touch & hold a key' : 'Press "Show Keyboard", hover a key, pinch then release', W / 2, H / 2);
+    ctx.fillText('Press "Show Keyboard", then touch & hold a key', W / 2, H / 2);
     requestAnimationFrame(draw);
     return;
   }
 
   const pinchD = hasHand ? dist(sSign, sThumb) : NaN;
-  if (mode === 'touch') {
-    pinchEl.textContent = hasHand && dwellKey ? `hold: ${Math.round(dwellProgress * 100)}%` : 'touch: hold a key';
-  } else {
-    pinchEl.textContent = hasHand ? `pinch: ${Math.round(pinchD)}px` : 'pinch: —';
-  }
 
   // Hover stability: index must rest on the same key a few frames (kills flicker to B/K).
   const curHover = hasHand ? keyAt(sSign.x, sSign.y) : null;
@@ -290,68 +244,33 @@ function draw() {
   const stableHover = hoverStreak >= STABLE_FRAMES ? hoverKey : null;
   const pinchCenter = hasHand ? { x: (sSign.x + sThumb.x) / 2, y: (sSign.y + sThumb.y) / 2 } : null;
 
+  // TOUCH (dwell) only — hold index on one key to type
   let activeKey = null;
-
-  if (mode === 'touch') {
-    // TOUCH (dwell): hold index on one key -> types once. Must leave key to retype.
-    if (hasHand && stableHover) {
-      if (dwellKey !== stableHover) {
-        dwellKey = stableHover;
-        dwellStart = now;
-        dwellProgress = 0;
-      } else {
-        dwellProgress = Math.min(1, (now - dwellStart) / DWELL_MS);
-        if (dwellProgress >= 1 && dwellDoneKey !== dwellKey && now - lastTypedAt > TYPE_COOLDOWN_MS) {
-          commitType(dwellKey, now);
-          dwellDoneKey = dwellKey; // require leaving the key before it can type again
-        }
-      }
-    } else {
-      dwellKey = null;
+  if (hasHand && stableHover) {
+    if (dwellKey !== stableHover) {
+      dwellKey = stableHover;
+      dwellStart = now;
       dwellProgress = 0;
-      if (!curHover) dwellDoneKey = null; // fully left keys -> re-arm
+    } else {
+      dwellProgress = Math.min(1, (now - dwellStart) / DWELL_MS);
+      if (dwellProgress >= 1 && dwellDoneKey !== dwellKey && now - lastTypedAt > TYPE_COOLDOWN_MS) {
+        commitType(dwellKey, now);
+        dwellDoneKey = dwellKey;
+      }
     }
-    activeKey = dwellKey && dwellProgress > 0 ? dwellKey : null;
   } else {
-    // PINCH: type exactly once per pinch edge, locked to one key.
-    if (hasHand && !pinchHeld && pinchD < PINCH_PX && stableHover) {
-      const target = stableHover || (pinchCenter ? keyAt(pinchCenter.x, pinchCenter.y) : null);
-      if (target && now - lastTypedAt > TYPE_COOLDOWN_MS) commitType(target, now);
-      pinchHeld = true;
-      lockedKey = target; // lock: jitter to B/K while held is ignored
-    } else if (pinchHeld && pinchD > PINCH_PX + PINCH_RELEASE_PAD) {
-      pinchHeld = false; // must fully release before next type (fixes "NN")
-      lockedKey = null;
-    }
-    activeKey = lockedKey;
+    dwellKey = null;
+    dwellProgress = 0;
+    if (! (hasHand ? keyAt(sSign.x, sSign.y) : null)) dwellDoneKey = null;
   }
+  activeKey = dwellKey && dwellProgress > 0 ? dwellKey : null;
 
   if (hasHand) {
-    if (mode === 'pinch' && pinchD < PINCH_PX + PINCH_RELEASE_PAD) {
-      ctx.strokeStyle = pinchHeld ? '#22c55e' : '#eab308';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(sSign.x, sSign.y);
-      ctx.lineTo(sThumb.x, sThumb.y);
-      ctx.stroke();
-      if (pinchCenter) {
-        ctx.fillStyle = pinchHeld ? '#22c55e' : '#eab308';
-        ctx.beginPath();
-        ctx.arc(pinchCenter.x, pinchCenter.y, 7, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    // Index fingertip is the cursor in both modes; thumb dot only matters for pinch.
+    // index fingertip cursor
     ctx.fillStyle = '#ff2fd6';
     ctx.beginPath();
     ctx.arc(sSign.x, sSign.y, 7, 0, Math.PI * 2);
     ctx.fill();
-    if (mode === 'pinch') {
-      ctx.fillStyle = 'rgba(255,47,214,0.55)';
-      ctx.beginPath();
-      ctx.arc(sThumb.x, sThumb.y, 6, 0, Math.PI * 2);
-      ctx.fill();
-    }
     ctx.strokeStyle = activeKey ? '#22c55e' : stableHover ? '#ffffff' : 'rgba(255,255,255,0.5)';
     ctx.lineWidth = activeKey ? 3 : 2;
     ctx.beginPath();
@@ -361,7 +280,7 @@ function draw() {
 
   for (const k of keys) {
     const flashed = flashKey === k && now - flashAt < 350;
-    const prog = mode === 'touch' && dwellKey === k ? dwellProgress : 0;
+    const prog = dwellKey === k ? dwellProgress : 0;
     drawKey(k, stableHover === k, activeKey === k, flashed, prog);
   }
   if (flashKey && now - flashAt >= 350) flashKey = null;
